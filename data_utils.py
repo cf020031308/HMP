@@ -6,6 +6,7 @@ import os
 import ipdb
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 from torch_geometric.data import Data
 from torch_geometric.data import InMemoryDataset
@@ -63,6 +64,7 @@ def load_LE_dataset(path, dataset):
             x = torch.FloatTensor(np.array(features[:num_nodes].todense())), 
             edge_index = torch.LongTensor(edge_index),
             y = labels[:num_nodes])
+    data.y = data.y - data.y.min()
 
     # data.coalesce()
     # There might be errors if edge_index.max() != num_nodes.
@@ -127,7 +129,7 @@ def load_citation_dataset(path, dataset):
         edge_idx += 1
 
     edge_index = np.array([ node_list + edge_list,
-                            edge_list + node_list], dtype = np.int)
+                            edge_list + node_list], dtype = np.int32)
     edge_index = torch.LongTensor(edge_index)
 
     data = Data(x = features,
@@ -218,7 +220,7 @@ def load_yelp_dataset(path, dataset, name_dictionary_size = 1000):
     data = Data(x = features,
                 edge_index = edge_index,
                 y = labels)
-    assert data.y.min().item() == 0
+    # assert data.y.min().item() == 0
     data.y = data.y - data.y.min()
 
     # data.coalesce()
@@ -234,11 +236,88 @@ def load_yelp_dataset(path, dataset, name_dictionary_size = 1000):
     data.num_features = features.shape[-1]
     data.num_classes = len(np.unique(labels.numpy()))
     data.num_nodes = num_nodes
-    data.num_hyperedges = H.he.values.max()
+    data.num_hyperedges = int(H.he.values.max())
 
     return data
 
-def load_cornell_dataset(path, dataset, feature_noise = 0.1, feature_dim = None):
+def synthesize_heterophily(dataset, feature_noise, feature_dim):
+    hetero = int(dataset.split('-')[-1])
+    num_nodes = 5000
+    num_classes = 2
+    num_edges = 1000
+    edge_size = 15
+
+    labels = torch.randint(0, num_classes, (num_nodes, ))
+    features = torch.nn.functional.one_hot(
+        labels, feature_dim or num_classes).float()
+    features += torch.randn(features.shape) * float(feature_noise)
+    print(f'number of nodes:{num_nodes}, feature dimension: {features.shape[1]}')
+
+    class0 = torch.arange(num_nodes)[labels == 0]
+    class1 = torch.arange(num_nodes)[labels == 1]
+    # NOTE: The original designed distribution is imbalanced wrt the two classes
+    # e0 = torch.cat((
+    #     class0[torch.randint(0, class0.shape[0], (num_edges, hetero))],
+    #     class1[torch.randint(0, class1.shape[0], (num_edges, edge_size - hetero))]), dim=1)
+    e1 = torch.arange(num_edges).view(-1, 1).repeat(1, edge_size)
+    m = num_edges // 2
+    e0 = torch.cat((
+        torch.cat((
+            class0[torch.randint(0, class0.shape[0], (m, hetero))],
+            class1[torch.randint(0, class1.shape[0], (m, hetero))])),
+        torch.cat((
+            class1[torch.randint(0, class1.shape[0], (m, edge_size - hetero))],
+            class0[torch.randint(0, class0.shape[0], (m, edge_size - hetero))]))), dim=1)
+
+    edge_index = torch.cat((
+        e0.view(1, -1), (num_nodes + e1).view(1, -1)), dim=0)
+    edge_index = torch.cat((edge_index, edge_index[[1, 0]]), dim=1)
+
+    data = Data(x=features, edge_index=edge_index, y=labels)
+    data.num_features = features.shape[-1]
+    data.num_classes = num_classes
+    data.num_nodes = num_nodes
+    data.num_hyperedges = num_edges
+    return data
+
+def synthesize_hyperchain(feature_noise, feature_dim, extra):
+    width = extra['width']
+    num_edges_perchain = extra['length']
+    num_classes = feature_dim
+    num_chains = 1000
+    num_nodes_perchain = (num_edges_perchain + 1) * width
+    num_nodes = num_nodes_perchain * num_chains
+    num_edges = num_edges_perchain * num_chains
+
+    labels = torch.randint(0, num_classes, (num_chains, num_nodes_perchain))
+    labels[:, :width] = labels[:, -width:] = labels[:, :1]
+    labels = labels.view(-1)
+    features = torch.nn.functional.one_hot(labels, num_classes=num_classes).float()
+    features = features.view(num_chains, num_edges_perchain + 1, width, num_classes)
+    features[:, 1:-1] *= float(feature_noise)
+    features[:, -1] = 0
+    features = features.view(num_nodes, -1)
+    print(f'number of nodes:{num_nodes}, feature dimension: {features.shape[1]}')
+
+    e0 = torch.arange(num_nodes_perchain - width).view(-1, 1).repeat(1, 2)
+    e0[:, 1] += width
+    e0 = e0.view(1, -1)
+    e1 = num_nodes + torch.arange(num_edges_perchain).view(-1, 1).repeat(1, 2 * width).view(1, -1)
+    edge_index = torch.cat([
+        torch.cat((e0 + i * num_nodes_perchain, e1 + i * num_edges_perchain))
+        for i in range(num_chains)], dim=1)
+    edge_index = torch.cat((edge_index, edge_index[[1, 0]]), dim=1)
+
+    data = Data(x=features, edge_index=edge_index, y=labels)
+    data.num_features = features.shape[-1]
+    data.num_classes = num_classes
+    data.num_nodes = num_nodes
+    data.num_hyperedges = num_edges
+
+    data.has_y = torch.arange(num_nodes).view(num_chains, num_edges_perchain + 1, width)[:, -1].flatten()
+    return data
+
+def load_cornell_dataset(path, dataset, feature_noise = 0.1, feature_dim = None, extra=None):
     '''
     this will read the yelp dataset from source files, and convert it edge_list to 
     [[ -V- | -E- ]
@@ -252,6 +331,11 @@ def load_cornell_dataset(path, dataset, feature_noise = 0.1, feature_dim = None)
     node label:
         - average stars from 2-10, converted from original stars which is binned in x.5, min stars = 1
     '''
+    if dataset.startswith('synthetic'):
+        return synthesize_heterophily(dataset, feature_noise, feature_dim)
+    if dataset == 'chain':
+        return synthesize_hyperchain(feature_noise, feature_dim, extra)
+
     print(f'Loading hypergraph dataset from cornell: {dataset}')
 
     # first load node labels

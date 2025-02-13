@@ -47,7 +47,7 @@ def main(args):
 
     device = torch.device('cuda:'+str(args.cuda) if torch.cuda.is_available() else 'cpu')
 
-    if args.method not in ['HyperGCN', 'HyperSAGE']:
+    if args.method not in ['HyperGCN', 'HyperSAGE', 'NT2']:
         transform = torch_geometric.transforms.Compose([datasets.AddHypergraphSelfLoops()])
     else:
         transform = None
@@ -68,8 +68,15 @@ def main(args):
     # Get splits
     split_idx_lst = []
     for run in range(args.runs):
-        split_idx = utils.rand_train_test_idx(
-            data.y, train_prop=args.train_prop, valid_prop=args.valid_prop)
+        if data.get('has_y') is not None:
+            split_idx = utils.rand_train_test_idx(
+                data.has_y, train_prop=args.train_prop, valid_prop=args.valid_prop)
+            split_idx = {
+                k: data.has_y[split_idx[k]]
+                for k in ['train', 'valid', 'test']}
+        else:
+            split_idx = utils.rand_train_test_idx(
+                data.y, train_prop=args.train_prop, valid_prop=args.valid_prop)
         split_idx_lst.append(split_idx)
 
     if args.method == 'AllSetTransformer':
@@ -100,6 +107,28 @@ def main(args):
         model = HyperND(data.num_features, data.num_classes, args)
     elif args.method == 'EDGNN':
         model = EquivSetGNN(data.num_features, data.num_classes, args)
+    elif args.method == 'NT2':
+        from nt2 import NT2
+        data.edge_index = data.edge_index[[1, 0]]
+        n_nodes = data.x.shape[0]
+        n_edges = data.edge_index[0].max().item() + 1
+        edge_type = data.edge_index[0] * 0
+        if args.with_edge_proxy:
+            data.x = torch.cat((data.x, data.x.new_zeros(n_edges, data.x.shape[1])))
+            edge_type = torch.cat((edge_type, edge_type.max() + data.edge_index.new_ones(n_edges)))
+            edge_proxy = torch.arange(n_edges).view(1, -1).repeat(2, 1).to(data.edge_index.device)
+            edge_proxy[1] += n_nodes
+            data.edge_index = torch.cat((data.edge_index, edge_proxy), dim=1)
+        edge_type = torch.cat((edge_type, edge_type.max() + data.edge_index.new_ones(n_nodes)))
+        node_proxy = torch.arange(n_nodes).view(1, -1).repeat(2, 1).to(data.edge_index.device)
+        node_proxy[0] += n_edges
+        data.edge_index = torch.cat((data.edge_index, node_proxy), dim=1)
+        data.edge_attr = F.one_hot(edge_type).float()
+        model = NT2(
+            node_din=data.num_features, incidence_din=data.edge_attr.shape[1],
+            dout=data.num_classes, **args.__dict__)
+        fwd = model.forward
+        model.forward = lambda *args, **kwargs: fwd(*args, **kwargs)[-n_nodes:]
     else:
         raise ValueError(f'Undefined model name: {args.method}')
     model = model.to(device)
@@ -119,7 +148,7 @@ def main(args):
 
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
-        best_val = float('-inf')
+        best_val, best_epoch = float('-inf'), 0
         for epoch in range(args.epochs):
             # Training loop
             model.train()
@@ -142,6 +171,10 @@ def main(args):
                       f'Train Acc: {100 * result[0]:.2f}%, '
                       f'Valid Acc: {100 * result[1]:.2f}%, '
                       f'Test Acc: {100 * result[2]:.2f}%')
+            if result[1] > best_val:
+                best_val, best_epoch = result[1], epoch
+            if epoch - best_epoch >= args.patience:
+                break
 
         end_time = time.time()
         runtime_list.append(end_time - start_time)
@@ -175,6 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', default=0.001, type=float)
     parser.add_argument('--wd', default=0.0, type=float)
     parser.add_argument('--display_step', type=int, default=50)
+    parser.add_argument('--patience', type=int, default=200)
 
     # Model common hyperparameters
     parser.add_argument('--method', default='EDGNN', help='model type')
@@ -223,6 +257,11 @@ if __name__ == '__main__':
     parser.add_argument('--HyperND_ord', default = 1., type=float)
     parser.add_argument('--HyperND_tol', default = 1e-4, type=float)
     parser.add_argument('--HyperND_steps', default = 100, type=int)
+    # Args for HyperPassing
+    parser.add_argument('--hidden', default=8, type=int)
+    parser.add_argument('--heads', default=4, type=int)
+    parser.add_argument('--n-layers', default=2, type=int)
+    parser.add_argument('--with-edge-proxy', action='store_true')
 
     parser.set_defaults(add_self_loop=True)
     parser.set_defaults(exclude_self=False)

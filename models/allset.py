@@ -163,7 +163,7 @@ class PMA(MessagePassing):
         :meth:`__init__` by the :obj:`aggr` argument.
         """
         if aggr is None:
-            raise ValeuError("aggr was not passed!")
+            aggr = 'add'
         return scatter(inputs, index, dim=self.node_dim, reduce=aggr)
 
     def __repr__(self):
@@ -255,7 +255,7 @@ class HalfNLHconv(MessagePassing):
         :meth:`__init__` by the :obj:`aggr` argument.
         """
         if aggr is None:
-            raise ValeuError("aggr was not passed!")
+            aggr = 'add'
         return scatter(inputs, index, dim=self.node_dim, reduce=aggr)
 
     def flops(self, x, edge_index):

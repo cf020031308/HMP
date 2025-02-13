@@ -63,7 +63,8 @@ class HypergraphDataset(InMemoryDataset):
     LE_list = ['20newsW100', 'ModelNet40', 'zoo', 'NTU2012', 'Mushroom']
     yelp_list = ['yelp']
     cornell_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'congress-bills', 'senate-committees'] + \
-        ['synthetic-0.1', 'synthetic-0.15', 'synthetic-0.2', 'synthetic-0.3', 'synthetic-0.35', 'synthetic-0.4', 'synthetic-0.5']
+        ['synthetic-1', 'synthetic-2', 'synthetic-3', 'synthetic-4', 'synthetic-5', 'synthetic-6', 'synthetic-7'] + \
+        ['chain']
 
     existing_dataset = cocitation_list + coauthor_list + LE_list + yelp_list + cornell_list
 
@@ -74,6 +75,11 @@ class HypergraphDataset(InMemoryDataset):
         if name_cornell in HypergraphDataset.cornell_list:
             extras['feature_dim'] = int(name.split('-')[-1])
             name = name_cornell
+        if name_cornell.startswith('chain-'):
+            extras['feature_dim'] = int(name.split('-')[-1])
+            extras['length'] = int(name.split('-')[-2])
+            extras['width'] = int(name.split('-')[-3])
+            name = 'chain'
 
         return name, extras
 
@@ -187,7 +193,7 @@ class HypergraphDataset(InMemoryDataset):
                     raise ValueError(f'For cornell datasets, feature noise cannot be {self.feature_noise}')
                 feature_dim = extra.get('feature_dim', None)
                 raw_data = load_cornell_dataset(path = self.path_to_download, dataset = dataset_name,
-                    feature_dim = feature_dim, feature_noise = self.feature_noise)
+                    feature_dim = feature_dim, feature_noise = self.feature_noise, extra=extra)
 
             elif dataset_name in self.yelp_list:
                 raw_data = load_yelp_dataset(path = self.path_to_download, dataset = dataset_name)
