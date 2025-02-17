@@ -23,4 +23,4 @@ Please follow the instructions of [ED-HNN](https://github.com/Graph-COM/ED-HNN?t
 ## Data Preparation for Hypergraph-Dependent Labelling
 
 1. Follow [WHATsNET](https://github.com/young917/EdgeDependentNodeLabel) to prepare `dataset/` which includes the raw text files for all datasets
-2. Run `python3 generate_node_features.py <dataset>` to generate `nocefeatires_44d.txt` and move it to `dataset/<dataset>`
+2. Run `python3 generate_node_features.py <dataset>` to generate `nocefeatires_44d.txt` and move it to `dataset/<dataset>`, where `<dataset>` can be DBLP, AMinerAuthor, emailEnron, emailEu, StackOverflowBiology, or StackOverflowPhysics.
